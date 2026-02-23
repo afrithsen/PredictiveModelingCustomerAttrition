@@ -1,2 +1,10 @@
-# Predictive Modeling Customer Attrition: Analytical Plan <br>
-In this project, I am working on developing a predictive model to identify customers at high risk of attrition, using a dataset containing information about approximately 10,000 customers. My analytical plan includes identifying key business variables such as customer demongraphics, transaction history, and engagement patterns, while addressing challenges including class imbalance and potential overfitting. Currently, I am building and evaluating multiple supervised learning models - including logistic regression and k-Nearest Neighbors - to determine the most effective model. My final analysis will provide actionable insights and recommendations to inform targeted retention strategies.
+# Predictive Modeling Customer Attrition <br>
+In the Preliminary Results, the development and evaluation of initial machine learning models 
+were conducted, following the steps outlined in the Analytic Plan.  This Final Report builds on 
+those findings by refining the predictive models and implementing advanced modeling 
+techniques to help the ABC Corporation identify customers at high risk of attrition.  Model 
+performance is compared to select the most effective approach, and the most important 
+predictors of customer attrition are highlighted.  Based on these insights, actionable 
+recommendations are provided to help ABC Corporation retain at-risk customers.  Finally, next 
+steps - including areas for improvement and strategies for ongoing model maintenance, are 
+outlined to ensure long term model effectiveness and reliability.
