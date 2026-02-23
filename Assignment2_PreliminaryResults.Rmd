@@ -1,0 +1,442 @@
+---
+title: "Assignment2_PreliminaryResults"
+output: html_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r}
+customers <- read.csv("customer_data.csv")
+dim(customers)
+
+customers <- na.omit(customers)
+dim(customers)
+
+set.seed(123)
+```
+
+Re-defining Education_Level using Indicator values
+```{r}
+
+customers$Education_Level_dummy <- as.numeric(factor(customers$Education_Level,
+                                               levels = c("Unknown", "Uneducated", "High School", "College", "Graduate", "Post-Graduate", "Doctorate")))
+
+sum(is.na(customers$Education_Level_dummy))
+```
+
+Re-defining Card_Category using Indicator values
+```{r}
+customers$Card_Category_dummy <- as.numeric(factor(customers$Card_Category,
+                                               levels = c("Blue", "Silver", "Gold", "Platinum")))
+
+sum(is.na(customers$Card_Category_dummy))
+```
+
+
+Logarithmic Transformations
+```{r}
+min(customers$Avg_Utilization_Ratio)
+min(customers$Credit_Limit)
+min(customers$Avg_Open_To_Buy)
+
+library(ggplot2)
+ggplot(customers) +
+  geom_point(aes(x=Credit_Limit,y=Avg_Utilization_Ratio)) +
+  geom_smooth(method='gam',aes(y=Avg_Utilization_Ratio, x=Credit_Limit))
+
+ggplot(customers) +
+  geom_point(aes(x=Avg_Open_To_Buy,y=Avg_Utilization_Ratio)) +
+  geom_smooth(method='gam',aes(y=Avg_Utilization_Ratio, x=Avg_Open_To_Buy))
+
+ggplot(data=customers, aes(x = Avg_Utilization_Ratio)) + 
+geom_histogram(bins=20)
+```
+```{r}
+customers$Credit_Limit_log <- log(customers$Credit_Limit)
+sum(is.na(customers$Credit_Limit))
+
+customers$Avg_Open_To_Buy_log <- log(customers$Avg_Open_To_Buy)
+sum(is.na(customers$Avg_Open_To_Buy_log))
+
+
+small_constant <- min(customers$Avg_Utilization_Ratio[customers$Avg_Utilization_Ratio>0]/2)
+
+customers$Avg_Utilization_Ratio_log <- log(customers$Avg_Utilization_Ratio + small_constant)
+sum(is.na(customers$Avg_Utilization_Ratio_log))
+
+
+```
+```{r}
+ggplot(customers) +
+  geom_point(aes(x=Credit_Limit_log,y=Avg_Utilization_Ratio_log)) +
+  geom_smooth(method='gam',aes(y=Avg_Utilization_Ratio_log, x=Credit_Limit_log))
+
+ggplot(customers) +
+  geom_point(aes(x=Avg_Open_To_Buy_log,y=Avg_Utilization_Ratio_log)) +
+  geom_smooth(method='gam',aes(y=Avg_Utilization_Ratio_log, x=Avg_Open_To_Buy_log))
+
+ggplot(data=customers, aes(x = Avg_Utilization_Ratio_log)) + 
+  geom_histogram(bins=20)
+```
+
+The Lasso
+```{r}
+library(glmnet)
+customers$Attrition_Indicator <- ifelse(customers$Attrition_Flag == "Attrited Customer", 1, 0)
+
+sum(customers$Attrition_Indicator)
+
+set.seed(123)
+
+x <- model.matrix(Attrition_Indicator ~ Customer_Age + Education_Level_dummy + Total_Relationship_Count + Card_Category_dummy + Months_Inactive_12_mon + Credit_Limit_log + Total_Revolving_Bal + Avg_Open_To_Buy_log + Total_Amt_Chng_Q4_Q1 + Total_Trans_Amt + Total_Trans_Ct + Total_Ct_Chng_Q4_Q1 + Avg_Utilization_Ratio_log, data = customers)
+
+y <- customers$Attrition_Indicator
+
+
+
+cv.lasso <- cv.glmnet(x, y, alpha = 1, family = "binomial", nfolds = 10)
+bestlam <- cv.lasso$lambda.min
+bestlam
+bestlam2 <- cv.lasso$lambda.1se
+bestlam2
+
+
+out <- glmnet(x, y, alpha = 1)
+lasso.coef <- predict(out, type = "coefficients", s = bestlam2)
+lasso.coef
+
+```
+
+
+
+```{r}
+
+
+x_all <- model.matrix(Attrition_Indicator ~ ., data = customers)[,-c(1,2)]
+
+
+set.seed(123)
+cv.lasso_all <- cv.glmnet(x_all, y, alpha = 1, family = "binomial", nfolds = 10)
+bestlam_all <- cv.lasso_all$lambda.min
+bestlam_all
+
+out_all <- glmnet(x_all, y, alpha = 1)
+lasso.coef_all <- predict(out_all, type = "coefficients", s = bestlam_all)
+lasso.coef_all
+
+bestlam_all2 <- cv.lasso_all$lambda.1se
+bestlam_all2
+
+out_all <- glmnet(x_all, y, alpha = 1)
+lasso.coef_all2 <- predict(out_all, type = "coefficients", s = bestlam_all2)
+lasso.coef_all2
+```
+standardize values for kNN
+```{r}
+numeric_vars <- sapply(customers, is.numeric)
+
+numeric_vars[1:2] <- FALSE
+
+st_customers <- customers
+st_customers[numeric_vars] <- scale(customers[numeric_vars])
+
+sum(is.na(st_customers))
+```
+
+Training vs. Testing Data sets
+```{r}
+10127*0.8
+10127-8101
+
+set.seed(123)
+train <- sample(10127, 8101)
+training_set <- customers[train,]
+testing_set <- customers[-train,]
+```
+
+Class breakdown in training set
+```{r}
+table(training_set$Attrition_Indicator)
+round(prop.table(table(training_set$Attrition_Indicator)) *100, 2)
+
+table(testing_set$Attrition_Indicator)
+round(prop.table(table(testing_set$Attrition_Indicator)) *100, 2)
+```
+Apply undersampling to training set
+```{r}
+library(dplyr)
+attrited <- training_set %>% filter(Attrition_Indicator == 1)
+existing <- training_set %>% filter(Attrition_Indicator == 0)
+
+set.seed(123)
+existing_undersampled <- existing %>% sample_n(nrow(attrited))
+balanced_training_set <- bind_rows(attrited, existing_undersampled) %>% sample_frac(1)
+
+table(balanced_training_set$Attrition_Flag)
+```
+Re-Apply Lasso
+```{r}
+balanced_x <- model.matrix(Attrition_Indicator ~ Customer_Age + Education_Level_dummy + Total_Relationship_Count + Card_Category_dummy + Months_Inactive_12_mon + Credit_Limit_log + Total_Revolving_Bal + Avg_Open_To_Buy_log + Total_Amt_Chng_Q4_Q1 + Total_Trans_Amt + Total_Trans_Ct + Total_Ct_Chng_Q4_Q1 + Avg_Utilization_Ratio_log, data = balanced_training_set)
+
+balanced_y <- balanced_training_set$Attrition_Indicator
+
+
+
+balanced_cv.lasso <- cv.glmnet(balanced_x, balanced_y, alpha = 1, family = "binomial", nfolds = 10)
+balanced_bestlam <- balanced_cv.lasso$lambda.min
+balanced_bestlam
+balanced_bestlam2 <- balanced_cv.lasso$lambda.1se
+balanced_bestlam2
+
+
+out <- glmnet(balanced_x, balanced_y, alpha = 1)
+lasso.coef <- predict(out, type = "coefficients", s = balanced_bestlam2)
+lasso.coef
+```
+```{r}
+balanced_x_all <- model.matrix(Attrition_Indicator ~ ., data = balanced_training_set)[,-c(1,2)]
+
+
+set.seed(123)
+balanced_cv.lasso_all <- cv.glmnet(balanced_x_all, balanced_y, alpha = 1, family = "binomial", nfolds = 10)
+balanced_bestlam_all <- balanced_cv.lasso_all$lambda.min
+balanced_bestlam_all
+
+balanced_out_all <- glmnet(balanced_x_all, balanced_y, alpha = 1)
+balanced_lasso.coef_all <- predict(out_all, type = "coefficients", s = balanced_bestlam_all)
+balanced_lasso.coef_all
+
+balanced_bestlam_all2 <- balanced_cv.lasso_all$lambda.1se
+balanced_bestlam_all2
+
+balanced_out_all <- glmnet(balanced_x_all, balanced_y, alpha = 1)
+balanced_lasso.coef_all2 <- predict(out_all, type = "coefficients", s = balanced_bestlam_all2)
+balanced_lasso.coef_all2
+```
+
+Logistic Regression Model 1
+```{r}
+
+glm.fits1 <- glm(Attrition_Indicator ~ Customer_Age + Education_Level_dummy + Total_Relationship_Count + Card_Category_dummy + Months_Inactive_12_mon + Credit_Limit_log + Total_Revolving_Bal + Avg_Open_To_Buy_log + Total_Amt_Chng_Q4_Q1 + Total_Trans_Amt + Total_Trans_Ct + Total_Ct_Chng_Q4_Q1 + Avg_Utilization_Ratio_log, data = balanced_training_set, family = binomial)
+
+summary(glm.fits1)
+
+glm.probs1 <- predict(glm.fits1, testing_set, type = "response")
+
+
+glm.pred1 <- rep(0, nrow(testing_set))
+glm.pred1[glm.probs1 > .5] <- 1
+
+table(glm.pred1, testing_set$Attrition_Indicator)
+
+logreg_accuracy1 = (1434+265)/(1434+54+273+265)
+logreg_precision1 = 265/(265+273)
+logreg_recall1 = 265/(265+54)
+F1_Score1 = 2*(logreg_precision1*logreg_recall1)/(logreg_precision1+logreg_recall1)
+```
+
+Logistic Regression Model 2
+```{r}
+
+glm.fits2 <- glm(Attrition_Indicator ~ Customer_Age + Total_Relationship_Count + Card_Category_dummy + Months_Inactive_12_mon + Total_Revolving_Bal + Avg_Open_To_Buy_log + Total_Amt_Chng_Q4_Q1 + Total_Trans_Amt + Total_Trans_Ct + Total_Ct_Chng_Q4_Q1 + Avg_Utilization_Ratio_log, data = balanced_training_set, family = binomial)
+
+summary(glm.fits2)
+glm.probs2 <- predict(glm.fits2, testing_set, type = "response")
+
+
+glm.pred2 <- rep(0, nrow(testing_set))
+glm.pred2[glm.probs2 > .5] <- 1
+
+table(glm.pred2, testing_set$Attrition_Indicator)
+
+logreg_accuracy2 = (1437+265)/(1437+54+270+265)
+logreg_precision2 = 265/(265+270)
+logreg_recall2 = 265/(265+54)
+F1_Score2 = 2*(logreg_precision2*logreg_recall2)/(logreg_precision2+logreg_recall2)
+
+```
+```{r}
+1434+273
+53+266
+```
+
+Logistic Regression Model 3
+```{r}
+
+glm.fits3 <- glm(Attrition_Indicator ~ Total_Relationship_Count + Card_Category_dummy + Months_Inactive_12_mon + Avg_Open_To_Buy_log + Total_Amt_Chng_Q4_Q1 + Total_Trans_Amt + Total_Trans_Ct + Total_Ct_Chng_Q4_Q1 + Avg_Utilization_Ratio_log, data = balanced_training_set, family = binomial)
+
+summary(glm.fits3)
+glm.probs3 <- predict(glm.fits3, testing_set, type = "response")
+
+
+glm.pred3 <- rep(0, nrow(testing_set))
+glm.pred3[glm.probs3 > .5] <- 1
+
+table(glm.pred3, testing_set$Attrition_Indicator)
+
+logreg_accuracy3 = (1434+266)/(1434+53+273+266)
+logreg_precision3 = 266/(266+273)
+logreg_recall3 = 266/(266+53)
+F1_Score3 = 2*(logreg_precision3*logreg_recall3)/(logreg_precision3+logreg_recall3)
+
+```
+
+
+ROC Curves for Logistic Regression Model for Variable Set 1
+```{r}
+library(pROC)
+
+roc_obj1 <- roc(testing_set$Attrition_Indicator, glm.probs1)
+auc(roc_obj1)
+roc_obj2 <- roc(testing_set$Attrition_Indicator, glm.probs2)
+auc(roc_obj2)
+roc_obj3 <- roc(testing_set$Attrition_Indicator, glm.probs3)
+auc(roc_obj3)
+
+plot.roc(roc_obj1, col = "turquoise", main = "ROC Curves for Logistic Regression 1", legacy.axes = TRUE)
+
+plot.roc(roc_obj2, col = "orange", main = "ROC Curves for Logistic Regression Comparison 2", legacy.axes = TRUE)
+
+plot.roc(roc_obj3, col = "violet", main = "ROC Curves for Logistic Regression Comparison 3", legacy.axes = TRUE)
+
+
+
+```
+```{r}
+1434+273
+54+265
+319+1707
+1488+538
+```
+
+
+```{r}
+roc.test(roc_obj1, roc_obj2)
+```
+```{r}
+# Plot the first ROC curve
+plot.roc(roc_obj1, col = "turquoise", main = "ROC Curves for Logistic Regression Models", legacy.axes = TRUE, lwd = 2)
+
+# Add the second and third ROC curves
+lines.roc(roc_obj2, col = "orange", lwd = 2)
+lines.roc(roc_obj3, col = "violet", lwd = 2)
+
+# Add a legend with AUC values
+legend("bottomright",
+       legend = c(paste("Model 1 (AUC =", round(auc(roc_obj1), 3), ")"),
+                  paste("Model 2 (AUC =", round(auc(roc_obj2), 3), ")"),
+                  paste("Model 3 (AUC =", round(auc(roc_obj3), 3), ")")),
+       col = c("turquoise", "orange", "violet"),
+       lwd = 2)
+```
+kNN models
+```{r}
+library(class)
+library(pROC)
+library(caret)
+
+vars <- c("Total_Relationship_Count", "Card_Category_dummy", "Months_Inactive_12_mon", "Avg_Open_To_Buy_log", "Total_Amt_Chng_Q4_Q1", "Total_Trans_Amt", "Total_Trans_Ct", "Total_Ct_Chng_Q4_Q1", "Avg_Utilization_Ratio_log")
+
+train.x <- balanced_training_set[, vars]
+test.x <- testing_set[, vars]
+
+#scale predictors using training set
+preProc <- preProcess(train.x, method = c("center", "scale"))
+train.x_scaled <- predict(preProc, train.x)
+test.x_scaled <- predict(preProc, test.x)
+
+# extract target variables
+y.train <- balanced_training_set$Attrition_Indicator
+y.test <- testing_set$Attrition_Indicator
+
+y.test <- factor(y.test, levels = c(0, 1))
+y.train <- factor(y.train, levels = c(0, 1))
+
+head(y.test)
+head(y.train)
+
+set.seed(123)
+knn.pred1 <- knn(train.x_scaled, test.x_scaled, y.train, k=11)
+
+
+# confusion matrix
+confusionMatrix(knn.pred1, y.test)
+1488+219
+58+261
+1546+480
+1707+319
+```
+
+```{r}
+# loop through k =1 to 19 odd values and compare
+set.seed(123)
+results <- data.frame(k = integer(), Accuracy = numeric(), F1 = numeric(), AUC = numeric())
+
+for (k in seq(1, 19, 2)) {
+  knn.pred <- knn(train = train.x_scaled, test = test.x_scaled, cl = y.train, k = k)
+  cm <- confusionMatrix(knn.pred, y.test)
+  
+  # F1 Score (for binary classification)
+  precision <- cm$byClass["Precision"]
+  recall <- cm$byClass["Recall"]
+  f1 <- 2 * (precision * recall) / (precision + recall)
+  
+  # AUC
+  knn.prob <- attr(knn(train = train.x_scaled,
+                       test = test.x_scaled,
+                       cl = y.train,
+                       k = k,
+                       prob = TRUE), "prob")
+  knn_prob_adj <- ifelse(knn.pred == levels(y.train)[2], knn.prob, 1 - knn.prob)
+  auc_val <- auc(roc(response = y.test, predictor = knn_prob_adj, levels = rev(levels(y.test))))
+  
+  # Save results
+  results <- rbind(results, data.frame(k = k, Accuracy = cm$overall["Accuracy"], F1 = f1, AUC = auc_val))
+}
+
+print(results)
+```
+
+```{r}
+#visualization
+library(ggplot2)
+library(reshape2)
+results_long <- melt(results, id.vars = "k", variable.name = "Metric", value.name = "Value")
+
+ggplot(results_long, aes(x = k, y = Value, color = Metric)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  geom_vline(xintercept = 11, linetype = "dashed", color = "darkgray") +
+  annotate("text", x = 11, y = 0.86, label = "k = 11", angle = 90, vjust = -0.5, hjust = 0.5) +
+  scale_color_manual(values = c("Accuracy" = "maroon", "F1" = "forestgreen", "AUC" = "darkorange")) +
+  labs(title = "Performance Metrics vs. k in kNN Model",
+       x = "k (Number of Neighbors)",
+       y = "Metric Value",
+       color = "Metric") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+```{r}
+set.seed(123)
+knn.pred11 <- knn(train.x_scaled, test.x_scaled, y.train, k=11)
+
+
+
+table(knn.pred11, y.test)
+mean(knn.pred == y.test)
+
+1514+193
+47+272
+
+(1514+272)/2026
+272/(272+47)
+
+1707/2026
+2026-1707
+319/2026
+```
+
+```{r}
+saveRDS(customers, file = "customers.rds")
+```
+

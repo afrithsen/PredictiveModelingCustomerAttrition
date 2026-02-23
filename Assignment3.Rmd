@@ -1,0 +1,824 @@
+---
+title: "Assignment3"
+output:
+  word_document: default
+  html_document: default
+editor_options:
+  chunk_output_type: inline
+---
+Set Up
+```{r}
+customers1 <- read.csv("customer_data.csv")
+customers2 <- readRDS("customers.rds")
+
+library(glmnet)
+library(dplyr)
+library(class)
+library(pROC)
+library(caret)
+library(ggplot2)
+library(tidyr)
+library(corrplot)
+library(randomForest)
+library(pROC)
+library(zoo)
+library(tree)
+library(gbm)
+library(iml)
+
+set.seed(123)
+```
+
+New Feature Engineering
+```{r}
+# Average Transaction Size - can be used to determine unusual spending patterns
+Avg_Transaction_size <- customers1$Total_Trans_Amt/customers2$Total_Trans_Ct
+
+# Engagement Score - combination of activity predictors compared to credit limit
+Engagement_Score <- scale((scale(customers1$Total_Trans_Amt) + scale(customers1$Total_Trans_Ct) + scale(customers1$Total_Amt_Chng_Q4_Q1) + scale(customers1$Total_Ct_Chng_Q4_Q1) + scale(customers1$Total_Relationship_Count))/customers1$Credit_Limit)
+
+# Transaction Count to Relationship Count - ratio between transaction count and relationship count, indicating the depth of the customer relationship
+
+Trans_Ct_to_Relationship_Ct <- customers1$Total_Trans_Ct/customers1$Total_Relationship_Count
+```
+
+Data Frame
+```{r}
+set.seed(123)
+
+customers_all <- cbind(customers2, Avg_Transaction_size, Engagement_Score, Trans_Ct_to_Relationship_Ct)
+
+# set up training and test sets
+train <- sample(10127, 8101)
+training_set_all <- customers_all[train,]
+testing_set_all <- customers_all[-train,]
+```
+
+Lasso with New Features
+```{r}
+set.seed(123)
+
+customers_lasso <- subset(customers_all, select = -c(CLIENTNUM, Attrition_Flag, Education_Level, Card_Category, Credit_Limit, Avg_Open_To_Buy))
+
+x <- model.matrix(Attrition_Indicator ~ ., data = customers_lasso)
+
+y <- customers_lasso$Attrition_Indicator
+
+cv.lasso <- cv.glmnet(x, y, alpha = 1, family = "binomial", nfolds = 10)
+bestlam <- cv.lasso$lambda.min
+bestlam
+bestlam2 <- cv.lasso$lambda.1se
+bestlam2
+
+
+out <- glmnet(x, y, alpha = 1)
+lasso.coef <- predict(out, type = "coefficients", s = bestlam2)
+lasso.coef
+```
+
+Data Balancing for Logistic Regression Model
+```{r}
+set.seed(123)
+
+# training_set for desired Lasso data set
+training_set_lasso <- customers_lasso[train, ]
+
+attrited <- training_set_lasso %>% filter(Attrition_Indicator == 1)
+existing <- training_set_lasso %>% filter(Attrition_Indicator == 0)
+
+existing_undersampled <- existing %>% sample_n(nrow(attrited))
+balanced_training_set <- bind_rows(attrited, existing_undersampled) %>% sample_frac(1)
+
+table(balanced_training_set$Attrition_Indicator)
+```
+Re-run Lasso with Balanced Data
+```{r}
+
+set.seed(123)
+
+balanced_x <- model.matrix(Attrition_Indicator ~ ., data = balanced_training_set)
+
+balanced_y <- balanced_training_set$Attrition_Indicator
+
+
+
+balanced_cv.lasso <- cv.glmnet(balanced_x, balanced_y, alpha = 1, family = "binomial", nfolds = 10)
+balanced_bestlam <- balanced_cv.lasso$lambda.min
+balanced_bestlam
+balanced_bestlam2 <- balanced_cv.lasso$lambda.1se
+balanced_bestlam2
+
+
+out <- glmnet(balanced_x, balanced_y, alpha = 1)
+lasso.coef <- predict(out, type = "coefficients", s = balanced_bestlam2)
+lasso.coef
+```
+New Logistic Model
+```{r}
+set.seed(123)
+
+customers_logistic <- subset(customers_lasso, select = -c(Customer_Age, Dependent_count, Income_Category, Months_on_book, Total_Amt_Chng_Q4_Q1, Total_Trans_Amt, Avg_Utilization_Ratio, Education_Level_dummy, Card_Category_dummy, Credit_Limit_log, Trans_Ct_to_Relationship_Ct))
+
+training_set_logistic <- customers_logistic[train, ]
+test_set_logistic <- customers_logistic[-train,]
+
+attrited_logistic <- training_set_logistic %>% filter(Attrition_Indicator == 1)
+existing_logistic <- training_set_logistic %>% filter(Attrition_Indicator == 0)
+
+existing_undersampled_logistic <- existing_logistic %>% sample_n(nrow(attrited))
+balanced_training_set_logistic <- bind_rows(attrited_logistic, existing_undersampled_logistic) %>% sample_frac(1)
+
+table(balanced_training_set_logistic$Attrition_Indicator)
+
+glm.fits <- glm(Attrition_Indicator ~ ., data = balanced_training_set_logistic, family = binomial)
+
+summary(glm.fits)
+
+glm.probs <- predict(glm.fits, test_set_logistic, type = "response")
+
+
+glm.pred <- rep(0, nrow(test_set_logistic))
+glm.pred[glm.probs > .5] <- 1
+
+table(glm.pred, test_set_logistic$Attrition_Indicator)
+logreg_accuracy = (1490+49)/2026
+logreg_precision = 270/(270+217)
+logreg_recall = 270/(270+49)
+logreg_F1_Score = 2*(logreg_precision*logreg_recall)/(logreg_precision+logreg_recall)
+
+```
+
+New kNN Model
+```{r}
+set.seed(123)
+
+# Set Up Data Sets
+# select only numerical predictors
+customers_kNN <- subset(customers_all, select = -c(CLIENTNUM, Attrition_Flag, Gender, Education_Level, Marital_Status, Income_Category, Card_Category))
+
+# balance data
+training_set_kNN <- customers_kNN[train, ]
+
+attrited_kNN <- training_set_kNN %>% filter(Attrition_Indicator == 1)
+existing_kNN <- training_set_kNN %>% filter(Attrition_Indicator == 0)
+
+existing_kNN_undersampled <- existing_kNN %>% sample_n(nrow(attrited_kNN))
+balanced_training_set_kNN <- bind_rows(attrited_kNN, existing_kNN_undersampled) %>% sample_frac(1)
+
+table(balanced_training_set_kNN$Attrition_Indicator)
+
+
+training_set_kNN <- balanced_training_set_kNN
+test_set_kNN <- customers_kNN[-train, ]
+
+training_set_kNN <- na.omit(training_set_kNN)
+test_set_kNN <- na.omit(test_set_kNN)
+
+# before scaling, split into predictors and outcome
+x_train <- training_set_kNN[, setdiff(names(training_set_kNN), "Attrition_Indicator")]
+x_test <- test_set_kNN[, setdiff(names(test_set_kNN), "Attrition_Indicator")]
+
+#scale predictors using training set
+preProc <- preProcess(x_train, method = c("center", "scale"))
+training_set_kNN_scaled <- predict(preProc, x_train)
+test_set_kNN_scaled <- predict(preProc, x_test)
+
+
+# extract target variables
+y_train <- training_set_kNN$Attrition_Indicator
+y_test <- test_set_kNN$Attrition_Indicator
+
+y_test <- factor(y_test, levels = c(0, 1))
+y_train <- factor(y_train, levels = c(0, 1))
+
+
+# determine optimal value of k
+results <- data.frame(k = integer(), Accuracy = numeric(), F1 = numeric(), AUC = numeric())
+
+
+for (k in seq(1, 19, 2)) {
+  knn.pred <- 
+    knn(train = training_set_kNN_scaled, test = test_set_kNN_scaled, cl = y_train, k = k)
+  cm <- confusionMatrix(knn.pred, y_test)
+  
+  # F1 Score (for binary classification)
+  precision <- cm$byClass["Precision"]
+  recall <- cm$byClass["Recall"]
+  f1 <- 2 * (precision * recall) / (precision + recall)
+  
+  # AUC
+  knn.prob <- attr(knn(train = training_set_kNN_scaled,
+                       test = test_set_kNN_scaled,
+                       cl = y_train,
+                       k = k,
+                       prob = TRUE), "prob")
+  knn_prob_adj <- ifelse(knn.pred == levels(y_train)[2], knn.prob, 1 - knn.prob)
+  auc_val <- auc(roc(response = y_test, predictor = knn_prob_adj, levels = rev(levels(y_test))))
+  
+  # Save results
+  results <- rbind(results, data.frame(k = k, Accuracy = cm$overall["Accuracy"], F1 = f1, AUC = auc_val))
+}
+
+print(results)
+
+
+
+knn_pred <- knn(training_set_kNN_scaled, test_set_kNN_scaled, y_train, k=5)
+
+# AUC
+knn_pred <- knn(train = training_set_kNN_scaled,
+                test = test_set_kNN_scaled,
+                cl = y_train,
+                k = 5,
+                prob = TRUE)
+roc_obj <- roc(response = y_test,
+               predictor = knn_prob_adj,
+               levels = rev(levels(y_test)))
+
+auc_value <- auc(roc_obj)
+auc_value
+# confusion matrix
+confusionMatrix(knn_pred, y_test)
+
+kNN_precision = 272/(188+272)
+kNN_recall = 272/(319)
+kNN_F1_Score = 2*(kNN_precision*kNN_recall)/(kNN_precision+kNN_recall)
+
+
+```
+
+Improve on Logistic Regression model
+```{r}
+set.seed(123)
+
+# data
+customers_logistic2 <- subset(customers_lasso, select = -c(Customer_Age, Dependent_count, Income_Category, Months_on_book, Total_Trans_Amt, Avg_Utilization_Ratio, Education_Level_dummy, Card_Category_dummy, Credit_Limit_log, Trans_Ct_to_Relationship_Ct))
+
+training_set_logistic2 <- customers_logistic2[train, ]
+test_set_logistic2 <- customers_logistic2[-train,]
+
+# Use boxplots to assess variable predictive power
+# Create boxplots for each numeric predictor versus Attrition_Indicator
+
+# Identify numeric predictors
+numeric_vars <- names(training_set_logistic2)[sapply(training_set_logistic2, is.numeric)]
+numeric_vars <- setdiff(numeric_vars, "Attrition_Indicator")
+
+# Reshape data into long format
+long_customers_logistic2 <- training_set_logistic2 %>% 
+  select(Attrition_Indicator, all_of(numeric_vars)) %>% 
+  pivot_longer(cols = -Attrition_Indicator,
+               names_to = "predictor",
+               values_to = "value")
+
+ggplot(long_customers_logistic2, aes(x = factor(Attrition_Indicator), y = value)) +
+  geom_boxplot() + 
+  facet_wrap(~ predictor, scales = "free_y") + 
+  labs(x = "Attrition Indicator", y = "Value", title = "Boxplots of Predictors by Attrition") + 
+  theme_minimal()
+
+# Examine relationship between numeric predictors
+pairs(training_set_logistic2[ ,numeric_vars])
+numeric_vars
+
+#Facet Scatterplots
+ggplot(training_set_logistic2, 
+       aes(x = Total_Revolving_Bal, y = Avg_Utilization_Ratio_log, 
+           color = Attrition_Indicator)) +
+  geom_point() +
+  facet_wrap(~Gender)
+
+ggplot(training_set_logistic2, 
+       aes(x = Total_Revolving_Bal, y = Avg_Utilization_Ratio_log, 
+           color = Attrition_Indicator)) +
+  geom_point() 
+
+ggplot(training_set_logistic2, 
+       aes(x = Total_Relationship_Count, y = Engagement_Score, 
+           color = Attrition_Indicator)) +
+  geom_point() +
+  facet_wrap(~Gender)
+
+ggplot(training_set_logistic2, 
+       aes(x = Total_Relationship_Count, y = Engagement_Score, 
+           color = Attrition_Indicator)) +
+  geom_point()
+
+
+ggplot(training_set_logistic2, 
+       aes(x = Avg_Open_To_Buy_log, y = Avg_Utilization_Ratio_log, 
+           color = Attrition_Indicator)) +
+  geom_point() +
+  facet_wrap(~Gender)
+
+ggplot(training_set_logistic2, 
+       aes(x = Avg_Open_To_Buy_log, y = Avg_Utilization_Ratio_log, 
+           color = Attrition_Indicator)) +
+  geom_point()
+
+ggplot(training_set_logistic2, 
+       aes(x = Total_Revolving_Bal, y = Avg_Utilization_Ratio_log, 
+           color = Attrition_Indicator)) +
+  geom_point() +
+  facet_wrap(~Gender)
+
+ggplot(training_set_logistic2, 
+       aes(x = Total_Revolving_Bal, y = Avg_Utilization_Ratio_log, 
+           color = Attrition_Indicator)) +
+  geom_point()
+
+# Run Lasso with Interaction terms included
+training_set_logistic2 <- customers_logistic2[train, ]
+
+attrited2 <- training_set_logistic2 %>% filter(Attrition_Indicator == 1)
+existing2 <- training_set_logistic2 %>% filter(Attrition_Indicator == 0)
+
+existing_undersampled2 <- existing2 %>% sample_n(nrow(attrited))
+balanced_training_set2 <- bind_rows(attrited2, existing_undersampled2) %>% sample_frac(1)
+
+table(balanced_training_set$Attrition_Indicator)
+
+balanced_x2 <- model.matrix(Attrition_Indicator ~ ., data = balanced_training_set2)
+
+balanced_y2 <- balanced_training_set$Attrition_Indicator
+
+balanced_training_set_logistic2 <- subset(balanced_training_set, select = -c(Customer_Age, Marital_Status, Income_Category, Months_on_book, Total_Trans_Amt, Avg_Utilization_Ratio, Education_Level_dummy, Card_Category_dummy, Credit_Limit_log, Trans_Ct_to_Relationship_Ct))
+
+balanced_training_set_lasso2 <- balanced_training_set_logistic2
+
+balanced_x_lasso2 <- model.matrix(Attrition_Indicator ~ . 
+                                  + Total_Revolving_Bal * Avg_Utilization_Ratio_log
+                                  + Total_Relationship_Count * Engagement_Score
+                                  + Total_Amt_Chng_Q4_Q1 * Engagement_Score
+                                  + Total_Amt_Chng_Q4_Q1 * Engagement_Score * Gender, 
+                                  data = balanced_training_set_lasso2)[, -1]
+
+balanced_y_lasso2 <- balanced_training_set$Attrition_Indicator
+
+
+
+balanced_cv.lasso2 <- cv.glmnet(balanced_x_lasso2, balanced_y_lasso2, alpha = 1, family = "binomial", nfolds = 10)
+balanced_bestlam_lasso2 <- balanced_cv.lasso2$lambda.min
+balanced_bestlam_lasso2
+balanced_bestlam2_lasso2 <- balanced_cv.lasso2$lambda.1se
+balanced_bestlam2_lasso2
+
+
+out2 <- glmnet(balanced_x_lasso2, balanced_y_lasso2, alpha = 1)
+lasso.coef <- predict(out2, type = "coefficients", s = balanced_bestlam2_lasso2)
+lasso.coef
+
+# Improved? Logistic Model
+glm.fits2 <- glm(Attrition_Indicator ~ Avg_Utilization_Ratio_log + Contacts_Count_12_mon + Engagement_Score + Months_Inactive_12_mon + Total_Relationship_Count + Total_Trans_Ct + Total_Revolving_Bal * Avg_Utilization_Ratio_log + Total_Amt_Chng_Q4_Q1 * Engagement_Score + Gender * Engagement_Score, data = balanced_training_set_logistic2, family = binomial)
+
+summary(glm.fits2)
+
+glm.probs2 <- predict(glm.fits2, test_set_logistic2, type = "response")
+
+
+glm.pred2 <- rep(0, nrow(test_set_logistic2))
+glm.pred2[glm.probs2 > .5] <- 1
+
+table(glm.pred2, test_set_logistic$Attrition_Indicator)
+logreg_accuracy2 = (267+1420)/2026
+logreg_precision2 = 267/(267+287)
+logreg_recall2 = 267/(267+52)
+logreg_F1_Score2 = 2*(logreg_precision2*logreg_recall2)/(logreg_precision2+logreg_recall2)
+
+
+
+glm.fits3 <- glm(Attrition_Indicator ~ Avg_Utilization_Ratio_log + Contacts_Count_12_mon + Engagement_Score + Months_Inactive_12_mon + Total_Relationship_Count + Total_Trans_Ct, data = balanced_training_set_logistic, family = binomial)
+
+summary(glm.fits3)
+
+glm.probs3 <- predict(glm.fits3, test_set_logistic, type = "response")
+
+
+glm.pred3 <- rep(0, nrow(test_set_logistic))
+glm.pred3[glm.probs3 > .5] <- 1
+
+table(glm.pred3, test_set_logistic$Attrition_Indicator)
+logreg_accuracy3 = (261+1402)/2026
+logreg_precision3 = 261/(305+261)
+logreg_recall3 = 261/(261+58)
+logreg_F1_Score3 = 2*(logreg_precision3*logreg_recall3)/(logreg_precision3+logreg_recall3)
+
+# AUC
+roc_glm <- roc(response = test_set_logistic$Attrition_Indicator,
+               predictor = glm.probs3,
+               levels = c(0, 1))  # Make sure levels are set properly if 0/1
+
+auc_value <- auc(roc_glm)
+auc_value
+```
+
+Heat Map for Correlation Coefficients
+```{r}
+set.seed(123)
+
+# Calculate correlation matrix
+numeric_data <- balanced_training_set_logistic[numeric_vars]
+cor_matrix <- cor(numeric_data, use = "pairwise.complete.obs")
+
+# Visualize heat map
+corrplot(cor_matrix, method = "color", type = "lower", tl.col = "black", tl.cex = 0.8, number.cex = 0.7, addCoef.col = "black")
+
+```
+
+Random Forest Model with Bagging
+```{r}
+set.seed(123)
+
+# data
+customers_rf <- subset(customers_all, select = -c(CLIENTNUM, Attrition_Flag, Education_Level_dummy, Card_Category_dummy, Credit_Limit_log, Avg_Open_To_Buy_log, Avg_Utilization_Ratio_log))
+
+customers_rf$Attrition_Indicator <- as.factor(customers_rf$Attrition_Indicator)
+
+# training set - 70/30 split
+train_rf <- sample(1:nrow(customers_rf), 0.7*nrow(customers_rf))
+training_set_rf <- customers_rf[train_rf, ]
+test_set_rf <- customers_rf[-train_rf, ]
+
+# balance training set
+attrited_rf <- training_set_rf %>% filter(Attrition_Indicator == 1)
+existing_rf <- training_set_rf %>% filter(Attrition_Indicator == 0)
+
+existing_undersampled_rf <- existing_rf %>% sample_n(nrow(attrited_rf))
+balanced_training_set_rf <- bind_rows(attrited_rf, existing_undersampled_rf) %>% sample_frac(1)
+
+table(balanced_training_set_rf$Attrition_Indicator)
+
+# bagged model
+bag_customers <- randomForest(Attrition_Indicator ~ ., data = balanced_training_set_rf, mtry = ncol(balanced_training_set_rf) - 1, importance = TRUE)
+bag_customers
+
+# Confusion Matrix
+rf_pred <- predict(bag_customers, newdata = test_set_rf)
+confusionMatrix(rf_pred, test_set_rf$Attrition_Indicator)
+
+
+rf_precision = 449/(449+205)
+rf_recall = 449/(449+29)
+rf_F1_Score = 2*(rf_precision*rf_recall)/(rf_precision+rf_recall)
+
+# Variable Importance
+importance(bag_customers)
+varImpPlot(bag_customers)
+
+# AUC
+rf_probs <- predict(bag_customers, newdata = test_set_rf, type = "prob")
+rf_auc <- roc(response = test_set_rf$Attrition_Indicator, predictor = rf_probs[, 1])
+auc(rf_auc)
+
+# plot ROC curve
+roc_obj <- roc(response = test_set_rf$Attrition_Indicator,
+               predictor = rf_probs[, 1],
+               levels = c(0, 1))
+plot(roc_obj, main = "ROC Curve for Random Forest Model with Bagging", 
+     col = "coral", lwd = 2)
+```
+
+Tune Hyperparameters --> Random Forest Model
+```{r}
+set.seed(123)
+
+# look at OOB error across trees to determine best ntrees value
+rf_model <- randomForest(Attrition_Indicator ~ ., data = training_set_rf, mtry = 5, ntree = 1000)
+plot(rf_model)
+
+rf_model <- randomForest(Attrition_Indicator ~ ., data = training_set_rf, mtry = 5, ntree = 200)
+plot(rf_model)
+
+rf_model <- randomForest(Attrition_Indicator ~ ., data = training_set_rf, mtry = 5, ntree = 50)
+plot(rf_model)
+
+#quantifying where the random forest error curve flattens
+oob_error <- rf_model$err.rate[, "OOB"]
+error_diff <- diff(oob_error)
+which(abs(error_diff) <0.0005)[1]
+
+# use rolling window to avoid noise
+smooth_diff <- rollmean(abs(error_diff), 5, fill = NA)
+
+optimal_ntree <- which(smooth_diff < 0.0005) [1]
+
+plot(oob_error, type = "l", main = "OOB Error by Tree", ylab = "OOB Error", xlab = "Number of Trees")
+abline(v = optimal_ntree, col = "turquoise", lty = 2)
+
+# use 5-fold cross validation to find the best mtry in grid search
+mtry_grid <- expand.grid(mtry = c(2, 4, 6, 8, 10))
+cv_control <- trainControl(method = "cv", number = 5)
+rf_cv <- train(Attrition_Indicator ~ ., 
+               data = balanced_training_set_rf,
+               method = "rf",
+               metric = "Accuracy", 
+               tuneGrid = mtry_grid,
+               trControl = cv_control,
+               ntree = 26)
+
+
+rf_cv
+
+# refined search
+mtry_grid2 <- expand.grid(mtry = c(6, 7, 8, 9, 10))
+
+rf_cv2 <-train(Attrition_Indicator ~ ., 
+               data = balanced_training_set_rf,
+               method = "rf",
+               metric = "Accuracy", 
+               tuneGrid = mtry_grid2,
+               trControl = cv_control,
+               ntree = 26)
+rf_cv2
+
+
+# optimize nodesize 
+nodesize_values <- c(1, 3, 5, 10, 20)
+
+#write a loop to test each value
+results <- data.frame(nodesize = nodesize_values, OOB_Error = NA)
+
+for (i in seq_along(nodesize_values)) {
+  rf_model <- randomForest(Attrition_Indicator ~ .,
+                           data = training_set_rf,
+                           nodesize = nodesize_values[i],
+                           ntree = 26,
+                           mtry = 8)
+  oob_error <- rf_model$err.rate[26, "OOB"]
+  results$OOB_Error[i] <- oob_error
+}
+
+plot(results$nodesize, results$OOB_Error, type = "b", pch = 19,
+     xlab = "Nodesize", ylab = "OOB Error",
+     main = "OOB Error vs Nodesize")
+
+results
+```
+
+"Tuned" Random Forest Model
+```{r}
+set.seed(123)
+
+# Random Forest Model with nodesize = 1
+rf_model_best1 <- randomForest(Attrition_Indicator ~ ., data = balanced_training_set_rf, mtry = 8, ntree = 26, nodesize = 1, importance = TRUE)
+rf_model_best1
+
+
+# Confusion Matrix
+rf_pred_1 <- predict(rf_model_best1, newdata = test_set_rf)
+confusionMatrix(rf_pred_1, test_set_rf$Attrition_Indicator)
+
+
+rf_precision1 = 454/(654)
+rf_recall1 = 454/(454+24)
+rf_F1_Score1 = 2*(rf_precision1*rf_recall1)/(rf_precision1+rf_recall1)
+
+# Variable Importance
+importance(rf_model_best1)
+varImpPlot(rf_model_best1)
+
+# AUC
+rf_probs1 <- predict(rf_model_best1, newdata = test_set_rf, type = "prob")
+rf_auc1 <- roc(response = test_set_rf$Attrition_Indicator, predictor = rf_probs1[, 1])
+auc(rf_auc1)
+
+# plot ROC curve
+roc_obj1 <- roc(response = test_set_rf$Attrition_Indicator,
+               predictor = rf_probs1[, 1],
+               levels = c(0, 1))
+plot(roc_obj1, main = "ROC Curve for Random Forest Model (nodesize = 1)", 
+     col = "maroon", lwd = 2)
+
+
+
+# Random Forest Model with nodesize = 10
+rf_model_best10 <- randomForest(Attrition_Indicator ~ ., data = balanced_training_set_rf, mtry = 7, ntree = 34, nodesize = 10, importance = TRUE)
+rf_model_best10
+
+# Confusion Matrix
+rf_pred_10 <- predict(rf_model_best10, newdata = test_set_rf)
+confusionMatrix(rf_pred_10, test_set_rf$Attrition_Indicator)
+
+rf_precision10 = 472/(472+157)
+rf_recall10 = 472/(472+23)
+rf_F1_Score10 = 2*(rf_precision10*rf_recall10)/(rf_precision10+rf_recall10)
+
+# Variable Importance
+importance(rf_model_best10)
+varImpPlot(rf_model_best10)
+
+# AUC
+rf_probs10 <- predict(rf_model_best10, newdata = test_set_rf, type = "prob")
+rf_auc10 <- roc(response = test_set_rf$Attrition_Indicator, predictor = rf_probs10[, 1])
+auc(rf_auc10)
+
+# plot ROC curve
+roc_obj10 <- roc(response = test_set_rf$Attrition_Indicator,
+               predictor = rf_probs10[, 1],
+               levels = c(0, 1))
+plot(roc_obj10, main = "ROC Curve for Random Forest Model (nodesize = 10)", 
+     col = "navy", lwd = 2)
+```
+
+Gradient Boosting
+```{r}
+set.seed(123)
+
+# need dummy variables for qualitative predictors
+customers_all$Gender_dummy <- as.numeric(factor(customers_all$Gender,
+                                               levels = c("M", "F")))
+
+sum(is.na(customers_all$Gender_dummy))
+
+
+unique(customers_all$Marital_Status)
+customers_all$Marital_Status_dummy <- as.numeric(factor(customers_all$Marital_Status,
+                                               levels = c("Single", "Married", "Divorced", "Unknown")))
+
+unique(customers_all$Marital_Status_dummy)
+sum(is.na(customers_all$Marital_Status_dummy))
+
+unique(customers_all$Income_Category)
+customers_all$Income_Category_dummy <- as.numeric(factor(customers_all$Income_Category,
+                                               levels = c("Less than $40K", "$40K - $60K", "$60K - $80K", "$80K - $120K", "$120K +", "Unknown")))
+unique(customers_all$Income_Category_dummy)
+sum(is.na(customers_all$Income_Category_dummy))
+
+# define data
+customers_boost <- subset(customers_all, select = -c(CLIENTNUM, Attrition_Flag, Education_Level, Card_Category, Credit_Limit, Avg_Open_To_Buy, Avg_Utilization_Ratio, Gender, Marital_Status, Income_Category))
+
+sum(customers_boost$Attrition_Indicator)
+
+
+
+# training set - 70/30 split
+set.seed(123)
+train_boost <- sample(1:nrow(customers_boost), 0.7*nrow(customers_boost))
+training_set_boost <- customers_boost[train_boost, ]
+test_set_boost <- customers_boost[-train_boost, ]
+
+# balance training set
+attrited_boost <- training_set_boost %>% filter(Attrition_Indicator == 1)
+existing_boost <- training_set_boost %>% filter(Attrition_Indicator == 0)
+
+existing_undersampled_boost <- existing_boost %>% sample_n(nrow(attrited_boost))
+balanced_training_set_boost <- bind_rows(attrited_boost, existing_undersampled_boost) %>% sample_frac(1)
+
+table(balanced_training_set_boost$Attrition_Indicator)
+
+#train gbm model
+boost_model <- gbm(Attrition_Indicator ~., data = balanced_training_set_boost, distribution = "bernoulli", cv.folds = 5)
+
+summary(boost_model)
+
+# optimize number of trees
+trees_best <- gbm.perf(boost_model, method = "cv")
+
+#confusion matrix
+gbm_probs <- predict(boost_model, newdata = test_set_boost, n.trees = trees_best, type = "response")
+gbm_pred <- ifelse(gbm_probs > 0.5, 1, 0)
+
+gbm_pred <- factor(gbm_pred)
+test_set_boost$Attrition_Indicator <- factor(test_set_boost$Attrition_Indicator)
+
+confusionMatrix(gbm_pred, test_set_boost$Attrition_Indicator)
+boost_precision = 442/(442+351)
+boost_recall = 442/(36+442)
+boost_F1_Score = 2*(boost_precision*boost_recall)/(boost_precision+boost_recall)
+```
+
+Tune Hyperparameters --> Random Forest Model
+```{r}
+set.seed(123)
+
+# define grid of parameters
+shrinkage_values <- c(0.001, 0.005, 0.01)
+depth_values <- c(1, 3, 5, 7)
+n.trees.max <- 5000
+
+# create data frame to store results
+boost_grid_results <- data.frame(
+  shrinkage = numeric(),
+  interaction.depth = integer(),
+  best_iter = integer(),
+  cv_error = numeric()
+)
+
+# Grid search loop
+for(shrink in shrinkage_values) {
+  for (depth in depth_values) {
+    
+    cat("Fitting model with shrinkage = ", shrink, "and depth = ", depth, "...\n")
+    
+    # fit gradient boosting model with CV
+    gbm_model <- gbm(
+      Attrition_Indicator ~.,
+      data = training_set_boost, 
+      distribution = "bernoulli",
+      n.trees = n.trees.max,
+      shrinkage = shrink,
+      interaction.depth = depth,
+      n.minobsinnode = 10,
+      bag.fraction = 0.5,
+      cv.folds = 5,
+      verbose = FALSE
+    )
+    
+    # get optimal number of trees based on CV error
+    best_iter <- gbm.perf(gbm_model, method = "cv", plot.it = FALSE)
+    cv_err <- min(gbm_model$cv.error)
+    
+    # store the results
+    boost_grid_results <- rbind(boost_grid_results, data.frame(
+      shrinkage = shrink,
+      interaction.depth = depth,
+      best_iter = best_iter,
+      cv_error = cv_err
+    ))
+  }
+}
+
+boost_grid_results
+best_model <- boost_grid_results %>% arrange(cv_error) %>% slice(1)
+best_model
+```
+
+Best Boosting Model
+```{r}
+set.seed(123)
+
+#train gbm model
+boost_model_best <- gbm(Attrition_Indicator ~., 
+                        data = balanced_training_set_boost, 
+                        distribution = "bernoulli", 
+                        n.trees = best_model$best_iter,
+                        shrinkage = best_model$shrinkage,
+                        interaction.depth = best_model$interaction.depth,
+                        n.minobsinnode = 10,
+                        bag.fraction = 0.5,
+                        verbose = FALSE)
+
+summary(boost_model_best)
+boost_model_best
+
+# confusion matrix
+
+gbm_probs_best <- predict(boost_model_best, newdata = test_set_boost, type = "response")
+gbm_pred_best <- ifelse(gbm_probs_best > 0.5, 1, 0)
+
+gbm_pred_best <- factor(gbm_pred_best)
+test_set_boost$Attrition_Indicator <- factor(test_set_boost$Attrition_Indicator)
+
+confusionMatrix(gbm_pred_best, test_set_boost$Attrition_Indicator)
+boost_precision_best = 457/(457+132)
+boost_recall_best = 457/(21+457)
+boost_F1_Score_best = 2*(boost_precision_best*boost_recall_best)/(boost_precision_best+boost_recall_best)
+
+
+# AUC
+boost_roc <- roc(
+  response = test_set_rf$Attrition_Indicator,
+  predictor = gbm_probs_best
+)
+
+boost_auc <- auc(boost_roc)
+print(paste("AUC:", round(boost_auc, 4)))
+
+# plot ROC curve
+
+plot(boost_roc, main = "ROC Curve for Gradient Boosting Model", 
+     col = "plum", lwd = 2)
+```
+
+```{r}
+min(customers_all$Trans_Ct_to_Relationship_Ct)
+
+
+```
+
+SHAP Values
+```{r}
+# prepare the data from iml by separating predicators and response
+X_test_iml <- test_set_boost
+
+# Create iml Predictor object
+predict_function_iml <- function(model, newdata) {
+  predict(model, newdata, n.trees = 100, type = "response")
+}
+
+predictor_iml <- Predictor$new(
+  model = boost_model_best,
+  data = X_test_iml[, setdiff(names(X_test_iml), "Attrition_Indicator")],
+  y = Y_test_iml,
+  predict.function = predict_function_iml,
+  class = "classification"
+)
+
+colnames(X_test_iml)
+# Compute SHAP values
+shap <- Shapley$new(predictor_iml, sample.size = 100) # sample.size = number of permutations used to approximate SHAP values; higher number = more accurate but slower --> 100 is a good start
+
+shap$plot()
+
+```
+
